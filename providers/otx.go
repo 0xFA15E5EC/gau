@@ -3,6 +3,8 @@ package providers
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
+	"github.com/bobesa/go-domain-util/domainutil"
 )
 
 type OTXProvider struct {
@@ -30,28 +32,50 @@ func NewOTXProvider(config *Config) Provider {
 }
 
 func (o *OTXProvider) formatURL(domain string, page int) string {
-	return fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/hostname/%s/url_list?limit=%d&page=%d",
-		domain, otxResultsLimit, page,
-	)
+	if !domainutil.HasSubdomain(domain) {
+		return fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/domain/%s/url_list?limit=%d&page=%d",
+			domain, otxResultsLimit, page,
+		)
+	} else if domainutil.HasSubdomain(domain) && o.IncludeSubdomains {
+		return fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/domain/%s/url_list?limit=%d&page=%d",
+			domainutil.Domain(domain), otxResultsLimit, page,
+		)
+	} else {
+		return fmt.Sprintf("https://otx.alienvault.com/api/v1/indicators/hostname/%s/url_list?limit=%d&page=%d",
+			domain, otxResultsLimit, page,
+		)
+	}
 }
 
 func (o *OTXProvider) Fetch(domain string, results chan<- string) error {
 	for page := 0; ; page++ {
 		resp, err := o.MakeRequest(o.formatURL(domain, page))
 		if err != nil {
-			return fmt.Errorf("failed to fetch otx resuts page %d: %s", page, err)
+			return fmt.Errorf("failed to fetch otx results page %d: %s", page, err)
 		}
 
 		var result OTXResult
 		if err = json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			_ = resp.Body.Close()
-			return fmt.Errorf("failed to decode otx resuts for page %d: %s", page, err)
+			return fmt.Errorf("failed to decode otx results for page %d: %s", page, err)
 		}
 
 		_ = resp.Body.Close()
 
 		for _, entry := range result.URLList {
-			results <- entry.URL
+			if o.IncludeSubdomains {
+				if !domainutil.HasSubdomain(domain) {
+					results <- entry.URL
+				} else {
+					if strings.Contains(strings.ToLower(entry.Hostname), strings.ToLower(domain)) {
+						results <- entry.URL
+					}
+				}
+			} else {
+				if strings.EqualFold(domain, entry.Hostname) {
+					results <- entry.URL
+				}
+			}
 		}
 
 		if !result.HasNext {
